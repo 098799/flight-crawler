@@ -1,14 +1,49 @@
 import datetime
-import requests
 import time
+
+import redis
+
+import session
 
 
 class RyanairCrawler(object):
     BOGUS_URL = "https://www.ryanair.com/gb/en/booking/home/BCN/SXF/2018-11-02/2018-11-05/1/0/0/0"
     JSON_URL = "https://desktopapps.ryanair.com/v4/en-ie/availability"
 
+    CUTOFF = 16
+
     def __init__(self):
-        self.session = requests.session()
+        self.session = session.Session()
+        self.redis = redis.StrictRedis(host='localhost', port=6379, db=0)
+
+    def crawl(self, dates, destination, origin):
+        dates = self.create_date_list(dates)
+
+        self.make_initial_request()
+
+        for date in dates:
+            beginning_of_key = self.get_key(date, origin, destination).encode()
+
+            if not any(beginning_of_key in key for key in self.redis.keys()):
+                json = self.make_json_request(date, origin, destination)
+                self.parse_json(json)
+
+    def create_date_list(self, dates):
+        date_string = "%Y-%m-%d"
+        day = datetime.datetime.strptime(dates[0], date_string)
+        last_day = datetime.datetime.strptime(dates[1], date_string)
+
+        day_range = [day.strftime(date_string)]
+
+        while day < last_day:
+            day += datetime.timedelta(6)
+            day_range.append(day.strftime(date_string))
+
+        return day_range
+
+    @staticmethod
+    def get_key(date, origin, destination, time=""):
+        return date + origin + destination + time
 
     @property
     def headers(self):
@@ -23,51 +58,6 @@ class RyanairCrawler(object):
             'cache-control': "no-cache",
         }
 
-    def params(self, origin, destination, date):
-        return {
-            "ADT": "1",
-            "CHD": "0",
-            # "DateIn": self.date_in,
-            "DateOut": date,
-            "Destination": destination,
-            "FlexDaysIn": "0",
-            "FlexDaysOut": "0",
-            "INF": "0",
-            "IncludeConnectingFlights": "true",
-            "Origin": origin,
-            "RoundTrip": "false",
-            "TEEN": "0",
-            "ToUs": "AGREED",
-            "exists": "false",
-        }
-
-    def crawl(self, dates, destination=None, origin=None):
-        dates = self.create_date_list(dates)
-
-        self.make_initial_request()
-        output = {}
-
-        for date in dates:
-            json = self.make_json_request(origin, destination, date)
-            flight, results = self.parse_json(json)
-            output[date] = results
-            time.sleep(0.1)
-
-        return flight, output
-
-    def create_date_list(self, dates):
-        date_string = "%Y-%m-%d"
-        day = datetime.datetime.strptime(dates[0], date_string)
-        last_day = datetime.datetime.strptime(dates[1], date_string)
-
-        day_range = [day.strftime(date_string)]
-
-        while day != last_day:
-            day += datetime.timedelta(1)
-            day_range.append(day.strftime(date_string))
-
-        return day_range
-
     def make_initial_request(self):
         response = self.session.get(
             self.BOGUS_URL,
@@ -77,46 +67,87 @@ class RyanairCrawler(object):
         if not response.ok:
             raise Exception("Problem with initial request")
 
-    def make_json_request(self, origin, destination, date):
+    def make_json_request(self, date, origin, destination):
         response = self.session.get(
             self.JSON_URL,
             headers=self.headers,
             params=self.params(origin, destination, date)
         )
 
+        time.sleep(0.2)
+
         if not response.ok:
             raise Exception("Problem with JSON request")
 
         return response.json()
 
-    def parse_json(self, json):
-        output = []
+    def params(self, origin, destination, date):
+        return {
+            "ADT": "1",
+            "CHD": "0",
+            "DateIn": date,
+            "DateOut": date,
+            "Destination": destination,
+            "FlexDaysIn": "6",
+            "FlexDaysOut": "6",
+            "INF": "0",
+            "IncludeConnectingFlights": "true",
+            "Origin": origin,
+            "RoundTrip": "true",
+            "TEEN": "0",
+            "ToUs": "AGREED",
+            "exists": "false",
+        }
 
-        currency = json.get('currency')
-        trips = json.get('trips')
+    def parse_json(self, json):
+        # currency = json.get('currency')
+        # server_time = json.get('serverTimeUTC')
+        trips = json.get('trips', [])
 
         for trip in trips:
             destination = trip.get('destination')
             origin = trip.get('origin')
+            # destination_name = trip.get('destinationName')
+            # origin_name = trip.get('originName')
 
-            destination_name = trip.get('destinationName')
-            origin_name = trip.get('originName')
+            dates = trip.get('dates', [])
 
-            for flight in trip['dates'][0]['flights']:
-                duration = flight['duration']
-                price = flight['regularFare']['fares'][0]['amount']
-                departure, arrival = flight['segments'][0]['time']
+            for date in dates:
+                date_out = date.get('dateOut').split("T")[0]
 
-                departure_hour = departure.split("T")[1].rsplit(":", 1)[0]
-                arrival_hour = arrival.split("T")[1].rsplit(":", 1)[0]
+                for flight in date.get('flights', []):
+                    # duration = flight['duration']
+                    fares_left = flight.get('faresLeft')
 
-                output.append(
-                    {
-                        'duration': duration,
-                        'price': f"{price} {currency}",
-                        'departure': departure_hour,
-                        'arrival': arrival_hour,
-                    }
-                )
+                    if fares_left:
+                        price = flight['regularFare']['fares'][0]['amount']
+                        departure, arrival = flight['segments'][0]['time']
 
-        return f"{origin_name} -> {destination_name}", output
+                        departure_hour = departure.split("T")[1].rsplit(":", 1)[0]
+                        # arrival_hour = arrival.split("T")[1].rsplit(":", 1)[0]
+
+                        self.redis.set(
+                            self.get_key(date_out,
+                                         origin,
+                                         destination,
+                                         time=departure_hour),
+                            price,
+                        )
+
+    def weekend(self):
+        for key in self.redis.keys():
+            key = key.decode()
+
+            if key[0] != "w":
+                date = datetime.datetime.fromisoformat(key[:10] + "T" + key[-5:] + ":00")
+
+                origin = key[10:13]
+
+                if origin == "BCN":
+                    if date.strftime("%a") == 'Fri' and int(date.strftime("%H")) >= self.CUTOFF:
+                        price = self.redis.get(key)
+                        self.redis.set("w"+key, price)
+                else:
+                    if date.strftime("%a") == 'Sun' and int(date.strftime("%H")) >= self.CUTOFF:
+                        price = self.redis.get(key)
+                        self.redis.set("w"+key, price)
