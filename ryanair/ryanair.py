@@ -1,4 +1,5 @@
 import datetime
+import logging
 import time
 
 import redis
@@ -6,11 +7,27 @@ import redis
 import session
 
 
+def combined_price(weekend):
+    return [weekend[0].price + return_flight.price for return_flight in weekend[1:]]
+
+
+class Flight(object):
+    def __init__(self, key, value):
+        key = key.decode()
+
+        self.date = datetime.datetime.fromisoformat(key[:10] + "T" + key[-5:] + ":00")
+        self.origin = key[10:13]
+        self.destination = key[13:16]
+        self.price = float(value.decode())
+
+
 class RyanairCrawler(object):
     BOGUS_URL = "https://www.ryanair.com/gb/en/booking/home/BCN/SXF/2018-11-02/2018-11-05/1/0/0/0"
     JSON_URL = "https://desktopapps.ryanair.com/v4/en-ie/availability"
 
-    CUTOFF = 16
+    CUTOFF_FRIDAY = 16
+    CUTOFF_THURSDAY = 16
+    CUTOFF_RETURN = 16
 
     def __init__(self):
         self.session = session.Session()
@@ -25,8 +42,13 @@ class RyanairCrawler(object):
             beginning_of_key = self.get_key(date, origin, destination).encode()
 
             if not any(beginning_of_key in key for key in self.redis.keys()):
-                json = self.make_json_request(date, origin, destination)
-                self.parse_json(json)
+                try:
+                    json = self.make_json_request(date, origin, destination)
+                    logging.info("Scraped %s for %s-%s trip",
+                                 date, origin, destination)
+                    self.parse_json(json)
+                except Exception as e:
+                    logging.warning("Something's wrong: %s", e)
 
     def create_date_list(self, dates):
         date_string = "%Y-%m-%d"
@@ -58,13 +80,30 @@ class RyanairCrawler(object):
             'cache-control': "no-cache",
         }
 
+    def import_from_redis(self):
+        keys = self.redis.keys()
+        weekend_keys = filter(lambda key: key.decode()[0] != "w", keys)
+        flights = []
+
+        for key in weekend_keys:
+            flights.append(Flight(key, self.redis.get(key)))
+
+        return flights
+
+    def match(self, begin, end):
+        conditions = [
+            datetime.timedelta(0) < (end.date - begin.date) <= datetime.timedelta(5),
+            begin.destination == end.origin,
+        ]
+        return True if all(conditions) else False
+
     def make_initial_request(self):
         response = self.session.get(
             self.BOGUS_URL,
             headers=self.headers
         )
 
-        if not response.ok:
+        if not response or not response.ok:
             raise Exception("Problem with initial request")
 
     def make_json_request(self, date, origin, destination):
@@ -76,7 +115,7 @@ class RyanairCrawler(object):
 
         time.sleep(0.2)
 
-        if not response.ok:
+        if not response or not response.ok:
             raise Exception("Problem with JSON request")
 
         return response.json()
@@ -100,15 +139,11 @@ class RyanairCrawler(object):
         }
 
     def parse_json(self, json):
-        # currency = json.get('currency')
-        # server_time = json.get('serverTimeUTC')
         trips = json.get('trips', [])
 
         for trip in trips:
             destination = trip.get('destination')
             origin = trip.get('origin')
-            # destination_name = trip.get('destinationName')
-            # origin_name = trip.get('originName')
 
             dates = trip.get('dates', [])
 
@@ -116,7 +151,6 @@ class RyanairCrawler(object):
                 date_out = date.get('dateOut').split("T")[0]
 
                 for flight in date.get('flights', []):
-                    # duration = flight['duration']
                     fares_left = flight.get('faresLeft')
 
                     if fares_left:
@@ -124,7 +158,6 @@ class RyanairCrawler(object):
                         departure, arrival = flight['segments'][0]['time']
 
                         departure_hour = departure.split("T")[1].rsplit(":", 1)[0]
-                        # arrival_hour = arrival.split("T")[1].rsplit(":", 1)[0]
 
                         self.redis.set(
                             self.get_key(date_out,
@@ -134,20 +167,55 @@ class RyanairCrawler(object):
                             price,
                         )
 
-    def weekend(self):
-        for key in self.redis.keys():
-            key = key.decode()
+    def weekend_begin_condition(self, flight, variant):
+        conditions = [flight.origin == "BCN"]
+        if variant == 0:
+            conditions.extend([
+                flight.date.strftime("%a") == 'Fri',
+                int(flight.date.strftime("%H")) >= self.CUTOFF_FRIDAY
+            ])
+        elif variant == 1:
+            conditions.extend([
+                flight.date.strftime("%a") == 'Thu',
+                int(flight.date.strftime("%H")) >= self.CUTOFF_THURSDAY
+            ])
+        elif variant == 2:
+            conditions.extend([
+                flight.date.strftime("%a") == 'Fri',
+                int(flight.date.strftime("%H")) >= self.CUTOFF_FRIDAY
+            ])
+        return all(conditions)
 
-            if key[0] != "w":
-                date = datetime.datetime.fromisoformat(key[:10] + "T" + key[-5:] + ":00")
+    def weekend_end_condition(self, flight, variant):
+        conditions = [int(flight.date.strftime("%H")) >= self.CUTOFF_RETURN,
+                      flight.origin != "BCN"]
+        if variant == 0:
+            conditions.append(flight.date.strftime("%a") == 'Sun')
+        elif variant == 1:
+            conditions.append(flight.date.strftime("%a") == 'Sun')
+        elif variant == 2:
+            conditions.append(flight.date.strftime("%a") == 'Mon')
+        return all(conditions)
 
-                origin = key[10:13]
+    def weekend_organizer(self, flights, variant=0):
+        weekend_beginnings = filter(
+            lambda flight: self.weekend_begin_condition(flight, variant),
+            flights,
+        )
+        weekend_ends = list(filter(
+            lambda flight: self.weekend_end_condition(flight, variant),
+            flights,
+        ))
+        weekends = []
 
-                if origin == "BCN":
-                    if date.strftime("%a") == 'Fri' and int(date.strftime("%H")) >= self.CUTOFF:
-                        price = self.redis.get(key)
-                        self.redis.set("w"+key, price)
-                else:
-                    if date.strftime("%a") == 'Sun' and int(date.strftime("%H")) >= self.CUTOFF:
-                        price = self.redis.get(key)
-                        self.redis.set("w"+key, price)
+        for flight in weekend_beginnings:
+            weekends.append([flight])
+
+            for return_flight in weekend_ends:
+                if self.match(flight, return_flight):
+                    weekends[-1].append(return_flight)
+
+        return sorted(
+            filter(lambda weekend: len(weekend) > 1, weekends),
+            key=combined_price
+        )

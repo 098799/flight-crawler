@@ -10,7 +10,7 @@ class Session(requests.Session):
     @property
     def free_proxy(self):
         if not getattr(self, "_free_proxy_list", None):
-            with open("proxy.dat", "r") as infile:
+            with open("../data/proxy.dat", "r") as infile:
                 self._free_proxy_list = infile.read().split()
 
         return {'https': random.choice(self._free_proxy_list)}
@@ -27,10 +27,11 @@ class Session(requests.Session):
                                        timeout=10,
                                        **kwargs)
             except (exceptions.ProxyError, exceptions.ConnectTimeout):
-                retries -= 1
                 continue
 
             if response.ok:
                 return response
 
             retries += 1
+
+        return response

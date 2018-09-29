@@ -1,6 +1,6 @@
 import pytest
 
-from .. import ryanair
+from ryanair import ryanair
 
 
 @pytest.fixture
