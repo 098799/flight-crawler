@@ -1,3 +1,5 @@
+![develop](https://travis-ci.org/098799/flight-crawler.svg?branch=develop)
+
 * Do you like Ryanair? Nobody does, but their flights are cheap and that's something. Are you too lazy to look for good weekend flights that won't require taking days off from work? Me too! So Power up the `python weekend.py` after populating your database with whatever flights you want, e.g. `python main.py 2018-10-01 2019-05-01 BCN SXF` and go!
 
 For example if you're living in Barcelona...
