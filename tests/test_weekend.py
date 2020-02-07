@@ -1,4 +1,4 @@
-from flight_crawler import weekend
+# from flight_crawler import weekend
 
 
 SHOW_VARIANT = 0

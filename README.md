@@ -1,8 +1,40 @@
-![develop](https://travis-ci.org/098799/flight-crawler.svg?branch=develop)
+![master](https://travis-ci.org/098799/flight-crawler.svg?branch=master)
 
-* Do you like Ryanair? Nobody does, but their flights are cheap and that's something. Are you too lazy to look for good weekend flights that won't require taking days off from work? Me too! So Power up the `python weekend.py` after populating your database with whatever flights you want, e.g. `python main.py 2018-10-01 2019-05-01 BCN SXF` and go!
+# Ryanair weekend planner
 
-For example if you're living in Barcelona...
+* Do you like Ryanair? Nobody does, but their flights are cheap and that's something.
+* Are you too lazy to look for good weekend flights that won't require taking days off from work? Me too!
+
+# Usage
+
+## Run redis
+```
+docker run -p 6379:6379 -v /home/grining/ryanair_crawler/redis:/data -d redis
+```
+
+## Install requirements
+```
+pip install -r requirements.txt
+```
+```
+pip install -e .
+```
+
+## Run crawler to populate the db
+```
+crawl $BEGIN $END $ORIGIN $DESTINATION
+```
+
+where `$BEGIN` and `END` are dates in the isoformat (YYYY-MM-DD) and `$ORIGIN` and `$DESTINATION` are 3 letter airport codes, e.g. BCN, SXF.
+
+## Run weekend calculator to get the cheapest weekend flights
+```
+weekend $HOW_LONG $MODE
+```
+
+where `$HOW_LONG` is the output length and `$MODE` is one of the weekend presets.
+
+This will generate something like:
 ```
 Malaga 2018-11-30 19:45:00  ---  [21.98]
 Malaga 2019-01-18 19:45:00  ---  [21.98]
@@ -32,5 +64,15 @@ Malaga 2019-02-01 19:45:00  ---  [49.93]
 ```
 Those prices (in the square brackets) look good for a FRI-SUN evening flights, don't they?
 
-* Remember to run redis for this to work, e.g.
-`docker run -p 6379:6379 -v /home/grining/ryanair_crawler/redis:/data -d redis`
+
+# Development
+
+## Install additional development requirements
+```
+pip install -r requirements-dev.txt
+```
+
+## Run tests
+```
+pytest -sxk "" --cov=flight_crawler --cov-report=term-missing
+```
