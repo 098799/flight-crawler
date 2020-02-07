@@ -7,9 +7,7 @@ import pytest
 
 @pytest.fixture
 def flight_instance():
-    return flight.Flight(
-        b"2018-01-01BCNSXF20:00", b'20.00'
-    )
+    return flight.Flight(b"2018-01-01BCNSXF20:00", b"20.00")
 
 
 def test_attributes(flight_instance):

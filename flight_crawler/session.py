@@ -1,33 +1,31 @@
-import random
+import functools
 
-from flight_crawler import utils
+from flight_crawler import secrets  # luminati username/password, not on git naturally
 
 import requests
 from requests import exceptions
 
 
 class Session(requests.Session):
-    """Tiny mod for requests.session"""
+    """Session with retries + timeout and proxy."""
 
-    PROXY_FILE = "data/proxy.dat"
+    MAX_RETRIES = 5
     REQUEST_TIMEOUT = 15
 
     @property
-    def free_proxy(self):
-        return {'https': random.choice(self.proxy_list)}
+    @functools.lru_cache()
+    def luminati_proxy(self):
+        """Cheap and effective, at least for this easy purpose. Please supply your own user and password."""
+        proxy = f"https://{secrets.username}:{secrets.password}@zproxy.lum-superproxy.io:22225"
+        return {"https": proxy, "http": proxy}
 
     def get(self, *args, **kwargs):
-        """Adding auto retry with different free proxy."""
         retries = 0
 
-        while retries < 10:
+        while retries < self.MAX_RETRIES:
             try:
-                response = super().get(
-                    *args,
-                    proxies=self.free_proxy,
-                    timeout=self.REQUEST_TIMEOUT,
-                    **kwargs
-                )
+                response = super().get(*args, proxies=self.luminati_proxy, timeout=self.REQUEST_TIMEOUT, **kwargs)
+
                 if response.ok:
                     return response
             except (exceptions.ProxyError, exceptions.ConnectTimeout):
@@ -35,9 +33,4 @@ class Session(requests.Session):
 
             retries += 1
 
-    @property
-    def proxy_list(self):
-        if not getattr(self, "_proxy_list", None):
-            self._proxy_list = utils.read_from_file(self.PROXY_FILE).split()
-
-        return self._proxy_list
+        return response

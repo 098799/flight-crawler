@@ -1,48 +1,79 @@
-import json
+import datetime
 
-from flight_crawler import crawler
+from flight_crawler import flight
+from flight_crawler import redis_entity
 from flight_crawler import utils
 
-import tabulate
 
+class WeekendCalculator(redis_entity.RedisEntity):
+    def import_from_redis(self):
+        keys = self.redis.keys()
+        weekend_keys = filter(lambda key: key.decode()[0] != "w", keys)
+        flights = []
 
-def import_stations():
-    stations = utils.read_from_file("data/stations.json")
-    return json.loads(stations)
+        for key in weekend_keys:
+            flights.append(flight.Flight(key, self.redis.get(key)))
 
+        return flights
 
-def table(weekends, stations):
-    table = []
+    def match(self, begin, end):
+        conditions = [
+            datetime.timedelta(0) < (end.date - begin.date) <= datetime.timedelta(5),
+            begin.destination == end.origin,
+        ]
+        return True if all(conditions) else False
 
-    for weekend in weekends:
-        destination = stations[weekend[0].destination]['name']
-        date = weekend[0].date
-        price = utils.combined_price(weekend)
-        table.append([destination, date, price])
+    def weekend_begin_condition(self, flight_list, variant):
+        conditions = [flight_list.origin == "BCN"]
+        if variant == 0:
+            conditions.extend(
+                [flight_list.date.strftime("%a") == "Fri", int(flight_list.date.strftime("%H")) >= self.CUTOFF_FRIDAY]
+            )
+        elif variant == 1:
+            conditions.extend(
+                [flight_list.date.strftime("%a") == "Thu", int(flight_list.date.strftime("%H")) >= self.CUTOFF_THURSDAY]
+            )
+        elif variant == 2:
+            conditions.extend(
+                [flight_list.date.strftime("%a") == "Fri", int(flight_list.date.strftime("%H")) >= self.CUTOFF_FRIDAY]
+            )
+        return all(conditions)
 
-    return table
+    def weekend_end_condition(self, flight_list, variant):
+        conditions = [int(flight_list.date.strftime("%H")) >= self.CUTOFF_RETURN, flight_list.origin != "BCN"]
+        if variant == 0:
+            conditions.append(flight_list.date.strftime("%a") == "Sun")
+        elif variant == 1:
+            conditions.append(flight_list.date.strftime("%a") == "Sun")
+        elif variant == 2:
+            conditions.append(flight_list.date.strftime("%a") == "Mon")
+        return all(conditions)
 
+    def weekend_organizer(self, flights, variant=0):
+        weekend_beginnings = filter(lambda flight_list: self.weekend_begin_condition(flight_list, variant), flights,)
+        weekend_ends = list(filter(lambda flight_list: self.weekend_end_condition(flight_list, variant), flights,))
+        weekends = []
 
-def main():
-    argv = utils.return_sys_argv()
-    howmany = int(argv[1])
-    variant = int(argv[2])
+        for flight_ in weekend_beginnings:
+            weekends.append([flight_])
 
-    bot = crawler.Crawler()
+            for return_flight in weekend_ends:
+                if self.match(flight_, return_flight):
+                    weekends[-1].append(return_flight)
 
-    flights = bot.import_from_redis()
-    stations = import_stations()
-    weekends = bot.weekend_organizer(flights, variant=variant)
+        sorted_weekends = sorted(filter(lambda weekend: len(weekend) > 1, weekends), key=utils.combined_price)
 
-    print(f"Variant {variant}")
+        destinations = {flight[0].destination for flight in sorted_weekends}
 
-    print(
-        tabulate.tabulate(
-            table(weekends, stations)[:howmany],
-            tablefmt="psql"
-        )
-    )
+        return_list = []
 
+        for destination in destinations:
+            for weekend in sorted_weekends:
+                if (
+                    weekend[0].destination == destination
+                    and len(list(filter(lambda w: w[0].destination == destination, return_list)))
+                    < self.HOW_MANY_FLIGHTS_TO_SHOW
+                ):
+                    return_list.append(weekend)
 
-if __name__ == '__main__':
-    main()
+        return sorted(return_list, key=utils.combined_price)
