@@ -10,12 +10,6 @@ import requests
 
 
 class Crawler(redis_entity.RedisEntity):
-    CUTOFF_FRIDAY = 16
-    CUTOFF_THURSDAY = 16
-    CUTOFF_RETURN = 16
-
-    HOW_MANY_FLIGHTS_TO_SHOW = 1
-
     SLEEP_TIME = 0.2
 
     def __init__(self):

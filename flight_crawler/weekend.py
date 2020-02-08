@@ -6,6 +6,12 @@ from flight_crawler import utils
 
 
 class WeekendCalculator(redis_entity.RedisEntity):
+    CUTOFF_FRIDAY = 16
+    CUTOFF_THURSDAY = 16
+    CUTOFF_RETURN = 16
+
+    HOW_MANY_FLIGHTS_TO_SHOW = 1
+
     def import_from_redis(self):
         keys = self.redis.keys()
         weekend_keys = filter(lambda key: key.decode()[0] != "w", keys)
